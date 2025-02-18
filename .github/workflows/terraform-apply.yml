@@ -1,0 +1,53 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [ "main" ]  # Trigger on push to main branch
+  workflow_dispatch:      # Allow manual triggering (for disabling in the template repo)
+
+
+permissions:
+  id-token: write # This is required for AWS OIDC JWT
+  contents: read # This is required for AWS OIDC JWT
+
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Learn more about AWS OIDC here: https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_IAM_ROLE_NAME }}
+          role-session-name: MY-PROJECT-SESSION-NAME
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+
+      - name: Setup Terraform State Backend
+        working-directory: ./terraform/bootstrap
+        run: |
+          chmod +x ./boostrap-state.sh
+          ./boostrap-state.sh
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # You can use env.TERRAFORM_CHANGED == 'true' to conditionally run steps based on whether Terraform applied changes
+      - name: Initialize and Plan Terraform
+        working-directory: ./terraform
+        run: |
+          terraform init -backend-config=state.config
+          terraform plan -detailed-exitcode
+          
+          if [ $? -eq 2 ]; then
+            echo "TERRAFORM_CHANGED=true" >> $GITHUB_ENV 
+          fi
+
+      - name: Apply Terraform
+        working-directory: ./terraform
+        run: |
+          terraform apply -auto-approve -input=false
