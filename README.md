@@ -1,18 +1,20 @@
 # Store Terraform State in AWS
 
 # About
-A cheap alternative to storing remote state with Terraform Cloud or Terraform Enterprise. This example uses AWS S3 and DynamoDB to store the Terraform state remotely.
 
-S3 stores the state file, Dynamo DB locks the state file to prevent concurrent writes.
+This repo will help you set up a remote state backend for Terraform using AWS. This is a cheap alternative to storing remote state with Terraform Cloud or Terraform Enterprise. Its developer experience isn’t as nice as Terraform Cloud. But it’s very cheap and flexible. With a sprinkle of shell scripts and GitHub Actions, I think I've obtained a developer experience that I find acceptable.
+
+S3 stores the state file, Dynamo DB locks the state to prevent concurrent writes.
 
 This example uses CloudFormation, GitHub Actions, and a Shell script to create the remote state. Fold the example code into your Terraform project as needed to begin using remote state.
 
 At the moment, it's necessary to provision the remote state before deploying with Terraform, unless you use a wrapper like Terragrunt. (Chicken and the egg type problem unfortunately. You need the remote state in order to deploy, but you need to deploy in order to create the remote state storage mechanisms)
 
-Note!: Versioning is enabled on the S3 bucket. This can be a good practice to allow rolling back the state and to prevent accidental deletion of the state file, but it does increase the cost of the bucket.
+Note!: Versioning is enabled on the S3 bucket. This can be a good practice to allow rolling back the state and to prevent accidental deletion of the state file, but it does increase the cost of the bucket a little.
 
 # Usage
-1. Configure the `state.config` file with your desired bucket name and DynamoDB table name. 
+
+1. Configure the `state.config` file with your desired bucket name and DynamoDB table name.
    1. If you want to use an extant bucket and table, the `/bootstrap` directory is not needed. Modify the "key" value so that it is unique in the bucket. This will prevent you from accidentally overwriting the terraform state of your other projects.
    2. Note, the bucket and table name MUST be unique in your AWS account if you intend to use the bootstrap script
 2. Check the `main.tf` file to ensure the `terraform` and `aws` blocks are configured correctly. The `backend` block can stay as is, but you may also specify ["encrypt"](https://developer.hashicorp.com/terraform/language/backend/s3#encrypt) and other settings as you wish.
@@ -23,20 +25,27 @@ Note!: Versioning is enabled on the S3 bucket. This can be a good practice to al
    4. NOTE!: If you prefer not to use AWS OIDC, you can also use the `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` secrets. However, this is not recommended for production use. Using long-lived tokens like these is a security risk.
 4. If you wish to run the boostrap script locally, you'll need to configure the [AWS CLI](https://aws.amazon.com/cli/) on your machine.
    1. Run the `bootstrap.sh` script in the `/bootstrap` directory to create the S3 bucket and DynamoDB table once you are ready
-5. When you are finally ready to deploy using terraform, you'll need to specify the location of your backend configuration file. 
+5. When you are finally ready to deploy using terraform, you'll need to specify the location of your backend configuration file.
    1. You can do this by running `terraform init -backend-config=state.config`
 
-
 # Important Files
+
 - `main.tf` - The main Terraform configuration file, which configures the [backend](https://developer.hashicorp.com/terraform/language/backend/s3), [AWS provider](https://registry.terraform.io/providers/hashicorp/aws/latest/docs), and Terraform version.
 - `state.config` - A configuration file that contains the bucket and table names. This file is used by the `bootstrap.sh` script AND the `main.tf` files.
 - `/bootstrap`
   - `bootstrap-state.sh` - A shell script that creates the S3 bucket and DynamoDB table using CloudFormation, if they don't already exist.
   - `terraform-state.yaml` - A CloudFormation template that defines the S3 bucket and DynamoDB table resources.
+  - `delete-stack.sh` - A shell script that deletes the CloudFormation stack and its resources. Use with caution, as this will delete the S3 bucket and DynamoDB table.
+  - `forcefully-unlock.sh` - A shell script that forcefully unlocks the DynamoDB table, if it becomes locked due to an interrupted Terraform operation.
 - `.github/workflows/terraform-apply.yml` - A GitHub Actions workflow that runs the `bootstrap.sh` script.
+- `.github/workflows/terraform-destroy.yml` - A GitHub Actions workflow that runs `terraform destroy` to tear down infrastructure created by Terraform, this also runs the delete-stack.sh script to delete the S3 bucket and DynamoDB table.
 
+# Note!
+
+In the /terraform/bootstrap/terraform-state.yaml file, the S3 bucket is configured with a `DeletionPolicy` of `Delete`. This means that if you delete the CloudFormation stack, the S3 bucket will also be deleted. Be careful with this setting, it will permanently delete your Terraform state file and all its versions. If you want to keep the S3 bucket and its contents when you delete the stack, you can change this to `Retain`.
 
 # Resources
+
 - https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services
 - https://developer.hashicorp.com/terraform/tutorials/automation/github-actions
 - https://medium.com/@thiagosalvatore/using-terraform-to-connect-github-actions-and-aws-with-oidc-0e3d27f00123

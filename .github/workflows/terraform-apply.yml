@@ -1,27 +1,35 @@
 name: Build and Deploy
 
+concurrency:
+  group: terraform-apply-${{ github.ref_name }}
+  cancel-in-progress: true
+
 on:
   push:
-    branches: [ "main" ]  # Trigger on push to main branch
-  workflow_dispatch:      # Allow manual triggering (for disabling in the template repo)
-
+    branches: ["main"] # Trigger on push to main branch
+  workflow_dispatch: # Allow manual triggering (for disabling in the template repo)
+    inputs:
+      force_invalidation:
+        description: 'Type "1" to force client rebuild/deploy and CloudFront invalidation even if no client changes detected'
+        required: false
+        type: string
 
 permissions:
-  id-token: write # This is required for AWS OIDC JWT
-  contents: read # This is required for AWS OIDC JWT
-
+  id-token: write # This is required for requesting the AWS OIDC JWT
+  contents: read # This is required for actions/checkout and AWS OIDC JWT
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 30 # Adjust this as necessary based on expected deployment time
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Learn more about AWS OIDC here: https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ secrets.AWS_IAM_ROLE_NAME }}
           role-session-name: MY-PROJECT-SESSION-NAME
@@ -40,14 +48,38 @@ jobs:
       - name: Initialize and Plan Terraform
         working-directory: ./terraform
         run: |
+          set -euo pipefail
           terraform init -backend-config=state.config
-          terraform plan -detailed-exitcode
-          
-          if [ $? -eq 2 ]; then
-            echo "TERRAFORM_CHANGED=true" >> $GITHUB_ENV 
+
+          set +e
+          terraform plan -detailed-exitcode -input=false -lock-timeout=5m
+          code=$?
+          set -e
+
+          if [ "$code" -eq 2 ]; then
+            echo "Terraform plan detected changes"
+            echo "TERRAFORM_CHANGED=true" >> $GITHUB_ENV
+            code=0
+          fi
+
+          # fail the job if plan errored
+          if [ "$code" -eq 1 ]; then
+            echo "terraform plan failed" >&2
+            exit 1
           fi
 
       - name: Apply Terraform
         working-directory: ./terraform
         run: |
-          terraform apply -auto-approve -input=false
+          terraform apply -auto-approve -input=false -lock-timeout=5m
+
+          # Example of exporting Terraform outputs as environment variables
+          # echo "S3_BUCKET_NAME=$(terraform output -raw s3_bucket_name)" >> $GITHUB_ENV
+
+      # Optionally, you can forcefully unlock Terraform state in case of stale locks
+      - name: Cleanup stale Terraform locks
+        if: always()
+        working-directory: ./terraform/bootstrap
+        run: |
+          chmod +x ./forcefully-unlock.sh
+          ./forcefully-unlock.sh
