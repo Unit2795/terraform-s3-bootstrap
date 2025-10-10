@@ -1,16 +1,17 @@
 terraform {
   backend "s3" {
-    bucket         = ""
-    key            = ""
-    dynamodb_table = ""
-    region         = ""
+    bucket  = ""
+    key     = ""
+    region  = ""
+    # Disable encryption if you don't need it (IE: you don't have sensitive data in your state file)
+    encrypt = true
   }
 
   required_providers {
     aws = {
       source = "hashicorp/aws"
       # Adjust AWS provider version as needed
-      version = "~> 6.14.1"
+      version = "~> 6.16.0"
     }
   }
 

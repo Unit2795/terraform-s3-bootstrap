@@ -1,16 +1,18 @@
 name: Build and Deploy
 
+# Ensure only one deployment per branch at a time, we will NOT interrupt in-progress deployments in order to prevent half-deployed infrastructure and corrupted Terraform state
 concurrency:
   group: terraform-apply-${{ github.ref_name }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 on:
   push:
     branches: ["main"] # Trigger on push to main branch
-  workflow_dispatch: # Allow manual triggering (for disabling in the template repo)
+  workflow_dispatch: # Allow manual triggering
     inputs:
-      force_invalidation:
-        description: 'Type "1" to force client rebuild/deploy and CloudFront invalidation even if no client changes detected'
+      # In the manual run dialog, you can specify whether to force an action to take place by typing "1" in the input, useful for situations where you want to redeploy something even without any Terraform changes
+      force_example_action:
+        description: 'Type "1" to force an action to take place, otherwise leave blank'
         required: false
         type: string
 
@@ -44,29 +46,27 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
-      # You can use env.TERRAFORM_CHANGED == 'true' to conditionally run steps based on whether Terraform applied changes
-      - name: Initialize and Plan Terraform
+      - name: Terraform Init
         working-directory: ./terraform
+        run: terraform init -backend-config=state.config
+
+      - name: Terraform Plan
+        working-directory: ./terraform
+        id: tf-plan
+        run: terraform plan -detailed-exitcode -input=false -lock-timeout=5m -out=tfplan
+        continue-on-error: true
+
+      # You can use "steps.tf-change.outputs.exitcode == 'true'" to conditionally run steps based on whether Terraform applied changes
+      # Learn more here: https://github.com/hashicorp/setup-terraform
+      - name: Detect Terraform Changes
+        id: tf-change
         run: |
-          set -euo pipefail
-          terraform init -backend-config=state.config
-
-          set +e
-          terraform plan -detailed-exitcode -input=false -lock-timeout=5m
-          code=$?
-          set -e
-
-          if [ "$code" -eq 2 ]; then
-            echo "Terraform plan detected changes"
-            echo "TERRAFORM_CHANGED=true" >> $GITHUB_ENV
-            code=0
-          fi
-
-          # fail the job if plan errored
-          if [ "$code" -eq 1 ]; then
-            echo "terraform plan failed" >&2
-            exit 1
-          fi
+          echo "Terraform plan exit code: ${{ steps.tf-plan.outputs.exitcode }}"
+          case "${{ steps.tf-plan.outputs.exitcode }}" in
+            0) echo "terraform_changed=false" >> $GITHUB_OUTPUT ;;
+            2) echo "terraform_changed=true" >> $GITHUB_OUTPUT ;;
+            *) echo "Unexpected exit code from terraform plan: ${{ steps.tf-plan.outputs.exitcode }}" >&2; exit 1;;
+          esac
 
       - name: Apply Terraform
         working-directory: ./terraform
@@ -76,10 +76,15 @@ jobs:
           # Example of exporting Terraform outputs as environment variables
           # echo "S3_BUCKET_NAME=$(terraform output -raw s3_bucket_name)" >> $GITHUB_ENV
 
-      # Optionally, you can forcefully unlock Terraform state in case of stale locks
-      - name: Cleanup stale Terraform locks
+      # Optionally, you can forcefully unlock Terraform state in case of stale locks. This step runs regardless of success or failure of previous steps due to "if: always()"
+      # This isn't strictly necessary due to the use of `concurrency`, but if the workflow is forcibly stopped (e.g., by a user), the lock may remain otherwise
+      - name: Cleanup Stale Terraform locks
         if: always()
         working-directory: ./terraform/bootstrap
         run: |
           chmod +x ./forcefully-unlock.sh
           ./forcefully-unlock.sh
+
+      - name: Example run with changes
+        if: steps.tf-change.outputs.terraform_changed == 'true' || github.event.inputs.force_example_action == '1'
+        run: echo "There are Terraform changes or a forced action was requested. Proceeding with example action."

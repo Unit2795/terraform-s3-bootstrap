@@ -3,6 +3,7 @@ name: Manual Terraform Destroy
 on:
   workflow_dispatch:
     inputs:
+      # Safety check to prevent accidental runs, user must type "DESTROY" to confirm in the manual run dialog
       confirm_destroy:
         description: 'Type "DESTROY" to confirm infrastructure deletion'
         required: true
